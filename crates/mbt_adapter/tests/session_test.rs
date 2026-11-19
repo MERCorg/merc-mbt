@@ -155,9 +155,7 @@ fn test_mcrl2_handshake_and_get_enabled() {
         assert!(matches!(adapter.expect().unwrap(), ToolMessage::Hello(_)));
 
         adapter.send(AdapterMessage::Hello(adapter_hello(20, 5_000))).unwrap();
-        adapter
-            .send(AdapterMessage::GetEnabled(GetEnabled { id: 1 }))
-            .unwrap();
+        adapter.send(AdapterMessage::GetEnabled(GetEnabled { id: 1 })).unwrap();
 
         let ToolMessage::Enabled(enabled) = adapter.expect().unwrap() else {
             panic!("expected an `enabled` reply");
@@ -199,9 +197,7 @@ fn test_mcrl2_get_enabled_before_hello_is_not_ready_and_survives() {
         assert_eq!(error.in_reply_to, Some(2));
 
         adapter.send(AdapterMessage::Hello(adapter_hello(20, 5_000))).unwrap();
-        adapter
-            .send(AdapterMessage::GetEnabled(GetEnabled { id: 1 }))
-            .unwrap();
+        adapter.send(AdapterMessage::GetEnabled(GetEnabled { id: 1 })).unwrap();
         let ToolMessage::Enabled(_) = adapter.expect().unwrap() else {
             panic!("the session must survive to answer the later `get_enabled`");
         };
@@ -465,9 +461,7 @@ fn test_mcrl2_reset_discards_pending_early_silently() {
         };
         assert_eq!(in_reply_to, 2);
 
-        adapter
-            .send(AdapterMessage::GetEnabled(GetEnabled { id: 1 }))
-            .unwrap();
+        adapter.send(AdapterMessage::GetEnabled(GetEnabled { id: 1 })).unwrap();
         let ToolMessage::Enabled(enabled) = adapter.expect().unwrap() else {
             panic!("expected an `enabled` reply");
         };

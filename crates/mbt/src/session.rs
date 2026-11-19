@@ -78,18 +78,18 @@ pub struct MbtSession<S: Read + Write + ReadDeadline> {
     phase: SessionPhase,
     /// The spec's single FIFO processing queue.
     queue: VecDeque<AdapterMessage>,
-    
+
     early: EarlySet,
-    
+
     /// `None` when `config.heartbeat_interval_ms == 0`, disabling the tool's
     /// automatic sending.
     next_heartbeat_send: Option<Instant>,
     /// `None` when `config.heartbeat_timeout_ms == 0`, disabling the
     /// peer-timeout check.
     peer_deadline: Option<Instant>,
-    
+
     hello: ToolMessage,
-    
+
     /// Every sent (`->`) and received (`<-`) message recorded in  file.
     message_log: Option<File>,
 }
@@ -539,7 +539,10 @@ impl<S: Read + Write + ReadDeadline> MbtSession<S> {
         }
         self.socket.close(None)?;
 
-        let _ = self.socket.get_mut().set_read_deadline(Some(Duration::from_millis(500)));
+        let _ = self
+            .socket
+            .get_mut()
+            .set_read_deadline(Some(Duration::from_millis(500)));
         while self.socket.read().is_ok() {}
         Ok(())
     }
@@ -630,7 +633,10 @@ fn next_deadline(
     peer_deadline: Option<Instant>,
     earliest_early: Option<Instant>,
 ) -> Option<Instant> {
-    [next_heartbeat_send, peer_deadline, earliest_early].into_iter().flatten().min()
+    [next_heartbeat_send, peer_deadline, earliest_early]
+        .into_iter()
+        .flatten()
+        .min()
 }
 
 /// The `major.minor` prefix of a `major.minor[.patch]` version string, used

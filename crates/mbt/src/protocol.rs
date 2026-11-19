@@ -296,7 +296,7 @@ mod tests {
     use super::SessionConfig;
     use super::decode_frame;
     use crate::MessageId;
-use crate::error::ErrorCode;
+    use crate::error::ErrorCode;
 
     #[test]
     fn config_defaults_when_absent() {

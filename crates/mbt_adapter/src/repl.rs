@@ -18,9 +18,9 @@ use merc_mbt::PROTOCOL_VERSION;
 use merc_mbt::PeerInfo;
 use merc_mbt::QuiescenceReport;
 use merc_mbt::Reset;
+use merc_mbt::SerializableAction;
 use merc_mbt::SessionConfig;
 use merc_tools::Version;
-use merc_mbt::SerializableAction;
 use tungstenite::Message;
 use tungstenite::WebSocket;
 
@@ -198,7 +198,11 @@ fn to_message(command: Command, ids: &mut IdGenerator) -> AdapterMessage {
         Command::Reset => AdapterMessage::Reset(Reset { id: ids.next() }),
         Command::Heartbeat => AdapterMessage::Heartbeat(Heartbeat { seq: None }),
         Command::Close { reason } => AdapterMessage::Close(Close {
-            reason: if reason.is_empty() { None } else { Some(reason.join(" ")) },
+            reason: if reason.is_empty() {
+                None
+            } else {
+                Some(reason.join(" "))
+            },
         }),
         Command::Help | Command::Quit | Command::Recv | Command::Poll | Command::Raw(_) => {
             unreachable!("handled directly in `run`")

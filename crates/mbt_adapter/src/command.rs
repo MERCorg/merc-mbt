@@ -79,8 +79,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         };
     }
 
-    let mut tokens =
-        shlex::split(line).ok_or_else(|| "error: unterminated quote or trailing backslash".to_string())?;
+    let mut tokens = shlex::split(line).ok_or_else(|| "error: unterminated quote or trailing backslash".to_string())?;
     if let Some(head) = tokens.first_mut() {
         head.make_ascii_lowercase();
     }

@@ -64,7 +64,7 @@ impl EarlySet {
                 remaining.push_back(entry);
             }
         }
-        
+
         self.entries = remaining;
         expired
     }
