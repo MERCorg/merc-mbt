@@ -30,7 +30,7 @@ jobs:
     - name: Install nightly rustfmt
       uses: dtolnay/rust-toolchain@nightly
       with:
-        components: rustfmt
+        components: rustfmt, clippy
 
     - name: Install cargo-nextest
       uses: taiki-e/install-action@nextest
