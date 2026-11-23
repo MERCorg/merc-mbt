@@ -13,6 +13,7 @@ pub enum ErrorCode {
     ProtocolMismatch,
     UnsupportedConfig,
     NotReady,
+    InvalidRequest,
     InputNotEnabled,
     OutputUnprocessed,
     QuiescenceUnexpected,
@@ -38,6 +39,9 @@ pub enum MbtError {
 
     #[error("received `{0}` before the handshake completed")]
     NotReady(&'static str),
+
+    #[error("invalid request: {0}")]
+    InvalidRequest(&'static str),
 
     #[error("input `{0}` is not enabled from the current state set")]
     InputNotEnabled(String),
@@ -67,6 +71,7 @@ impl MbtError {
             MbtError::ProtocolMismatch { .. } => ErrorCode::ProtocolMismatch,
             MbtError::UnsupportedConfig(_) => ErrorCode::UnsupportedConfig,
             MbtError::NotReady(_) => ErrorCode::NotReady,
+            MbtError::InvalidRequest(_) => ErrorCode::InvalidRequest,
             MbtError::InputNotEnabled(_) => ErrorCode::InputNotEnabled,
             MbtError::OutputUnprocessed(_, _) => ErrorCode::OutputUnprocessed,
             MbtError::QuiescenceUnexpected => ErrorCode::QuiescenceUnexpected,
@@ -80,13 +85,14 @@ impl MbtError {
     pub fn is_fatal(&self) -> bool {
         match self {
             MbtError::MalformedMessage(_)
-            | MbtError::UnknownType(_)
             | MbtError::ProtocolMismatch { .. }
             | MbtError::UnsupportedConfig(_)
             | MbtError::LpsUnavailable { .. }
             | MbtError::Transport(_)
             | MbtError::Model(_) => true,
-            MbtError::NotReady(_)
+            MbtError::UnknownType(_)
+            | MbtError::NotReady(_)
+            | MbtError::InvalidRequest(_)
             | MbtError::InputNotEnabled(_)
             | MbtError::OutputUnprocessed(_, _)
             | MbtError::QuiescenceUnexpected => false,
@@ -145,6 +151,7 @@ mod tests {
     fn fatal_errors_close_the_connection() {
         assert!(MbtError::MalformedMessage("x".into()).is_fatal());
         assert!(MbtError::UnsupportedConfig("x".into()).is_fatal());
+        assert!(!MbtError::UnknownType("x".into()).is_fatal());
         assert!(!MbtError::NotReady("get_enabled").is_fatal());
         assert!(!MbtError::InputNotEnabled("a".into()).is_fatal());
     }
