@@ -375,11 +375,14 @@ impl<S: Read + Write + ReadDeadline> MbtSession<S> {
     fn handle_input(&mut self, obs: Observation) -> Result<(), MbtError> {
         let key = MultiActionKey::from_wire(&obs.multi_action);
         if self.model.accept_input(&key, self.config.tau_closure_depth)? {
+            // The spec orders the early set's re-evaluation (and thus the
+            // acks of any re-matched early outputs) before the input's own
+            // `ack`, unlike for outputs.
+            self.reevaluate_early()?;
             self.send(ToolMessage::Ack {
                 in_reply_to: obs.id,
                 kind: AckKind::Input,
-            })?;
-            self.reevaluate_early()
+            })
         } else {
             self.reply_error(
                 Some(obs.id),
@@ -449,36 +452,37 @@ impl<S: Read + Write + ReadDeadline> MbtSession<S> {
     }
 
     /// Re-evaluates the early set against the current state set after every
-    /// accepted observation: on the first entry (in insertion order) whose
-    /// output is now enabled, applies it and restarts the scan — one match
-    /// may enable another — until a full scan finds none.
+    /// accepted observation: repeatedly applies and acks the first entry (in
+    /// insertion order) whose output is enabled, until none is.
+    ///
+    /// Restarting from the first entry after every match, rather than
+    /// continuing the scan, matters because applying an output can narrow
+    /// the state set and disable other entries: when several entries become
+    /// enabled at once, the earliest observed one is preferred, so the
+    /// reconstructed trace stays as close as possible to the observed order.
+    ///
+    /// Entries whose timeout already passed (the frame that triggered this
+    /// arrived before `service_timers` got to them) are expired first: the
+    /// protocol only re-matches an entry while its timer is running.
     fn reevaluate_early(&mut self) -> Result<(), MbtError> {
+        self.sweep_expired(Instant::now())?;
         let depth = self.config.tau_closure_depth;
-        loop {
-            let before = self.early.len();
-
-            let mut matched_key = None;
-            for entry in self.early.iter() {
-                if self.model.accept_output(&entry.key, depth)? {
-                    matched_key = Some(entry.key.clone());
-                    break;
-                }
+        let mut index = 0;
+        while let Some(entry) = self.early.get(index) {
+            let key = entry.key.clone();
+            if self.model.accept_output(&key, depth)? {
+                let removed = self
+                    .early
+                    .remove(index)
+                    .expect("the entry that just matched must still be present in the early set");
+                self.send(ToolMessage::Ack {
+                    in_reply_to: removed.id,
+                    kind: AckKind::Output,
+                })?;
+                index = 0;
+            } else {
+                index += 1;
             }
-
-            let Some(key) = matched_key else { break };
-            let removed = self
-                .early
-                .take_matching(&key)
-                .expect("the key that just matched must still be present in the early set");
-            self.send(ToolMessage::Ack {
-                in_reply_to: removed.id,
-                kind: AckKind::Output,
-            })?;
-
-            debug_assert!(
-                self.early.len() < before,
-                "reevaluate_early must strictly shrink the early set"
-            );
         }
         Ok(())
     }

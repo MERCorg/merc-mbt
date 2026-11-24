@@ -66,13 +66,19 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// Compiles [`SPEC`] with `mcrl22lps` and builds a [`ModelState`], or `None`
 /// if `MCRL2_PATH` is unset.
 fn simple_model(name: &str) -> Option<ModelState> {
+    model_from(name, SPEC, PARTITION)
+}
+
+/// Compiles `spec` with `mcrl22lps` and builds a [`ModelState`] with the given
+/// input/output `partition`, or `None` if `MCRL2_PATH` is unset.
+fn model_from(name: &str, spec: &str, partition: &str) -> Option<ModelState> {
     let mcrl2_path = std::env::var("MCRL2_PATH").ok()?;
     let mcrl22lps = Path::new(&mcrl2_path).join("mcrl22lps");
 
     let dir = temp_dir(name).unwrap();
     let spec_path = dir.path().join("spec.mcrl2");
     let lps_path = dir.path().join("spec.lps");
-    std::fs::write(&spec_path, SPEC).expect("Failed to write spec");
+    std::fs::write(&spec_path, spec).expect("Failed to write spec");
 
     let status =
         traced_command(Command::new(&mcrl22lps).arg(&spec_path).arg(&lps_path)).expect("Failed to execute mcrl22lps");
@@ -81,7 +87,7 @@ fn simple_model(name: &str) -> Option<ModelState> {
     let lps = read_lps(lps_path.to_str().unwrap()).expect("Failed to read LPS");
     let explicit = ExplicitLinearProcessSpecification::new(lps).expect("Failed to build explicit LPS");
 
-    let partition = parse_partition(PARTITION.as_bytes()).expect("Failed to parse partition");
+    let partition = parse_partition(partition.as_bytes()).expect("Failed to parse partition");
     partition
         .validate_against_lps(&explicit)
         .expect("Partition does not cover the LPS");
@@ -399,25 +405,102 @@ fn test_mcrl2_output_early_then_enabling_input_acks_in_order() {
                 multi_action: multi_action("req"),
             }))
             .unwrap();
+        // The early set is re-evaluated before the input is acked.
         let ToolMessage::Ack {
             in_reply_to: first_ack,
             kind: first_kind,
         } = adapter.expect().unwrap()
         else {
-            panic!("expected the input's own `ack` first");
+            panic!("expected the early output's `ack` first");
         };
-        assert_eq!(first_ack, 2);
-        assert_eq!(first_kind, AckKind::Input);
+        assert_eq!(first_ack, 1, "the early output's ack must reference its own id");
+        assert_eq!(first_kind, AckKind::Output);
 
         let ToolMessage::Ack {
             in_reply_to: second_ack,
             kind: second_kind,
         } = adapter.expect().unwrap()
         else {
-            panic!("expected the early output's `ack` second");
+            panic!("expected the input's own `ack` second");
         };
-        assert_eq!(second_ack, 1, "the early output's ack must reference its own id");
-        assert_eq!(second_kind, AckKind::Output);
+        assert_eq!(second_ack, 2);
+        assert_eq!(second_kind, AckKind::Input);
+
+        adapter.send(AdapterMessage::Close(Close { reason: None })).unwrap();
+        adapter.drain();
+    });
+
+    run_tool(addr, model, default_limits());
+    handle.join().unwrap();
+}
+
+/// After `go` and `b`, the model offers `a` and `c`, but taking either
+/// disables the other.
+const CHOICE_SPEC: &str = "
+    act go, a, b, c;
+    init go . b . (a + c) . delta;
+";
+const CHOICE_PARTITION: &str = "
+    input
+      go;
+    output
+      a;
+      b;
+      c;
+";
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn test_mcrl2_early_reevaluation_prefers_the_earliest_entry() {
+    let Some(model) = model_from("test_mbt_session_early_restart", CHOICE_SPEC, CHOICE_PARTITION) else {
+        println!("Skipping test: MCRL2_PATH not set");
+        return;
+    };
+
+    let (addr, listener) = MockAdapter::bind().unwrap();
+    let handle = thread::spawn(move || {
+        let mut adapter = MockAdapter::accept(listener, READ_TIMEOUT).unwrap();
+        assert!(matches!(adapter.expect().unwrap(), ToolMessage::Hello(_)));
+        adapter.send(AdapterMessage::Hello(adapter_hello(20, 1_000))).unwrap();
+
+        // None of the outputs is enabled before `go`: all three are early.
+        for (id, name) in [(1, "a"), (2, "b"), (3, "c")] {
+            adapter
+                .send(AdapterMessage::Output(Observation {
+                    id,
+                    multi_action: multi_action(name),
+                }))
+                .unwrap();
+            let ToolMessage::Warning(warning) = adapter.expect().unwrap() else {
+                panic!("expected a `warning` for early output `{name}`");
+            };
+            assert_eq!(warning.in_reply_to, id);
+            assert_eq!(warning.code, WarningCode::OutputEarly);
+        }
+
+        adapter
+            .send(AdapterMessage::Input(Observation {
+                id: 4,
+                multi_action: multi_action("go"),
+            }))
+            .unwrap();
+
+        // Only `b` matches first. Re-evaluation then restarts from the first
+        // entry, so `a` (observed before `c`) wins the choice, and `c` is
+        // left to expire.
+        for (expected_id, expected_kind) in [(2, AckKind::Output), (1, AckKind::Output), (4, AckKind::Input)] {
+            let ToolMessage::Ack { in_reply_to, kind } = adapter.expect().unwrap() else {
+                panic!("expected an `ack` for id {expected_id}");
+            };
+            assert_eq!(in_reply_to, expected_id);
+            assert_eq!(kind, expected_kind);
+        }
+
+        let ToolMessage::Error(error) = adapter.expect().unwrap() else {
+            panic!("expected `c` to expire from the early set");
+        };
+        assert_eq!(error.in_reply_to, Some(3));
+        assert_eq!(error.code, ErrorCode::OutputUnprocessed);
 
         adapter.send(AdapterMessage::Close(Close { reason: None })).unwrap();
         adapter.drain();

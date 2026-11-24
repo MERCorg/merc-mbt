@@ -69,16 +69,15 @@ impl EarlySet {
         expired
     }
 
-    /// Iterates the pending entries in insertion order.
-    pub fn iter(&self) -> impl Iterator<Item = &EarlyEntry> {
-        self.entries.iter()
+    /// The pending entry at `index`, counted in insertion order.
+    pub fn get(&self, index: usize) -> Option<&EarlyEntry> {
+        self.entries.get(index)
     }
 
-    /// Finds the first pending entry (in insertion order) matching `key`,
-    /// removing and returning it.
-    pub fn take_matching(&mut self, key: &MultiActionKey) -> Option<EarlyEntry> {
-        let position = self.entries.iter().position(|e| &e.key == key)?;
-        self.entries.remove(position)
+    /// Removes and returns the pending entry at `index`, counted in
+    /// insertion order, preserving the order of the rest.
+    pub fn remove(&mut self, index: usize) -> Option<EarlyEntry> {
+        self.entries.remove(index)
     }
 }
 
@@ -153,26 +152,18 @@ mod tests {
     }
 
     #[test]
-    fn take_matching_removes_the_first_match_only() {
+    fn remove_preserves_the_order_of_the_rest() {
         let base = Instant::now();
         let mut set = EarlySet::default();
         set.push(entry(1, "x", base + Duration::from_millis(10)));
-        set.push(entry(2, "x", base + Duration::from_millis(20)));
+        set.push(entry(2, "y", base + Duration::from_millis(20)));
+        set.push(entry(3, "z", base + Duration::from_millis(30)));
 
-        let found = set.take_matching(&key("x")).unwrap();
-        assert_eq!(found.id, 1);
-        assert_eq!(set.len(), 1);
-        assert_eq!(set.take_matching(&key("x")).unwrap().id, 2);
-        assert!(set.take_matching(&key("x")).is_none());
-    }
-
-    #[test]
-    fn take_matching_no_match_returns_none() {
-        let base = Instant::now();
-        let mut set = EarlySet::default();
-        set.push(entry(1, "x", base + Duration::from_millis(10)));
-        assert!(set.take_matching(&key("y")).is_none());
-        assert_eq!(set.len(), 1);
+        assert_eq!(set.remove(1).unwrap().id, 2);
+        assert_eq!(set.get(0).unwrap().id, 1);
+        assert_eq!(set.get(1).unwrap().id, 3);
+        assert!(set.get(2).is_none());
+        assert!(set.remove(2).is_none());
     }
 
     #[test]
