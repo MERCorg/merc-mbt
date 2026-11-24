@@ -218,7 +218,7 @@ fn test_mcrl2_get_enabled_before_hello_is_not_ready_and_survives() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
-fn test_mcrl2_unknown_type_closes_with_error() {
+fn test_mcrl2_unknown_type_errors_and_survives() {
     let Some(model) = simple_model("test_mbt_session_unknown_type") else {
         println!("Skipping test: MCRL2_PATH not set");
         return;
@@ -239,9 +239,12 @@ fn test_mcrl2_unknown_type_closes_with_error() {
         assert_eq!(error.code, ErrorCode::UnknownType);
         assert_eq!(error.in_reply_to, Some(99));
 
-        let ToolMessage::Close(_) = adapter.expect().unwrap() else {
-            panic!("expected the session to close after an unknown type");
+        adapter.send(AdapterMessage::GetEnabled(GetEnabled { id: 1 })).unwrap();
+        let ToolMessage::Enabled(_) = adapter.expect().unwrap() else {
+            panic!("the session must survive an unknown type");
         };
+
+        adapter.send(AdapterMessage::Close(Close { reason: None })).unwrap();
         adapter.drain();
     });
 
@@ -501,6 +504,40 @@ fn test_mcrl2_early_reevaluation_prefers_the_earliest_entry() {
         };
         assert_eq!(error.in_reply_to, Some(3));
         assert_eq!(error.code, ErrorCode::OutputUnprocessed);
+
+        adapter.send(AdapterMessage::Close(Close { reason: None })).unwrap();
+        adapter.drain();
+    });
+
+    run_tool(addr, model, default_limits());
+    handle.join().unwrap();
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn test_mcrl2_second_hello_is_invalid_request_and_survives() {
+    let Some(model) = simple_model("test_mbt_session_second_hello") else {
+        println!("Skipping test: MCRL2_PATH not set");
+        return;
+    };
+
+    let (addr, listener) = MockAdapter::bind().unwrap();
+    let handle = thread::spawn(move || {
+        let mut adapter = MockAdapter::accept(listener, READ_TIMEOUT).unwrap();
+        assert!(matches!(adapter.expect().unwrap(), ToolMessage::Hello(_)));
+        adapter.send(AdapterMessage::Hello(adapter_hello(20, 1_000))).unwrap();
+
+        adapter.send(AdapterMessage::Hello(adapter_hello(20, 1_000))).unwrap();
+        let ToolMessage::Error(error) = adapter.expect().unwrap() else {
+            panic!("expected an `error` for the second `hello`");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.in_reply_to, None);
+
+        adapter.send(AdapterMessage::GetEnabled(GetEnabled { id: 1 })).unwrap();
+        let ToolMessage::Enabled(_) = adapter.expect().unwrap() else {
+            panic!("the session must survive a second `hello`");
+        };
 
         adapter.send(AdapterMessage::Close(Close { reason: None })).unwrap();
         adapter.drain();

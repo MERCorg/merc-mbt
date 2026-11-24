@@ -82,7 +82,8 @@ pub struct MbtSession<S: Read + Write + ReadDeadline> {
     early: EarlySet,
 
     /// `None` when `config.heartbeat_interval_ms == 0`, disabling the tool's
-    /// automatic sending.
+    /// automatic sending, and until the handshake completes: the protocol
+    /// only permits messages other than `hello` once both peers are ready.
     next_heartbeat_send: Option<Instant>,
     /// `None` when `config.heartbeat_timeout_ms == 0`, disabling the
     /// peer-timeout check.
@@ -116,7 +117,7 @@ impl<S: Read + Write + ReadDeadline> MbtSession<S> {
             socket,
             model,
             limits,
-            next_heartbeat_send: deadline_after(config.heartbeat_interval_ms, now),
+            next_heartbeat_send: None,
             peer_deadline: deadline_after(config.heartbeat_timeout_ms, now),
             config,
             phase: SessionPhase::AwaitingHello,
@@ -245,11 +246,14 @@ impl<S: Read + Write + ReadDeadline> MbtSession<S> {
     /// requires at least one message of any kind every
     /// `heartbeat_interval_ms`, so every outbound message, not only
     /// heartbeats, counts. A no-op on the timer when
-    /// `heartbeat_interval_ms == 0` disables it.
+    /// `heartbeat_interval_ms == 0` disables it, or before the handshake has
+    /// completed.
     fn send(&mut self, message: ToolMessage) -> Result<(), MbtError> {
         log_to(self.message_log.as_mut(), "->", &message);
         send_message(&mut self.socket, &message)?;
-        self.next_heartbeat_send = deadline_after(self.config.heartbeat_interval_ms, Instant::now());
+        if self.phase == SessionPhase::Ready {
+            self.next_heartbeat_send = deadline_after(self.config.heartbeat_interval_ms, Instant::now());
+        }
         Ok(())
     }
 
@@ -273,7 +277,25 @@ impl<S: Read + Write + ReadDeadline> MbtSession<S> {
             "the single-threaded loop drains to at most one queued message"
         );
         while let Some(msg) = self.queue.pop_front() {
-            self.handle_message(msg)?;
+            if let Err(err) = self.handle_message(msg) {
+                // A transport failure cannot be reported over the same
+                // transport; anything else (e.g. a model error during
+                // enumeration) is reported as `internal` before closing.
+                // The error omits `in_reply_to`: the failing message may
+                // already have received its final answer (an output is
+                // acked before the early set is re-evaluated), and every
+                // observation gets exactly one.
+                if !matches!(err, MbtError::Transport(_)) {
+                    log::error!("{err}");
+                    let _ = self.send(ToolMessage::Error(ErrorMessage {
+                        in_reply_to: None,
+                        code: err.code(),
+                        message: err.to_string(),
+                    }));
+                    let _ = self.begin_close(None);
+                }
+                return Err(err);
+            }
             if self.phase == SessionPhase::Closing {
                 break;
             }
@@ -295,9 +317,10 @@ impl<S: Read + Write + ReadDeadline> MbtSession<S> {
                 let id = message_id(&other);
                 self.reply_error(id, MbtError::NotReady(message_kind(&other)))
             }
-            (SessionPhase::Ready, AdapterMessage::Hello(_)) => {
-                self.reply_error(None, MbtError::NotReady("hello (handshake already complete)"))
-            }
+            (SessionPhase::Ready, AdapterMessage::Hello(_)) => self.reply_error(
+                None,
+                MbtError::InvalidRequest("`hello` received after the handshake completed"),
+            ),
             (SessionPhase::Ready, AdapterMessage::Heartbeat(_)) => {
                 self.note_inbound();
                 Ok(())
@@ -488,16 +511,21 @@ impl<S: Read + Write + ReadDeadline> MbtSession<S> {
     }
 
     /// Sends `error` for a frame-level decode failure, echoing `in_reply_to`
-    /// where recovered, then closes: `malformed_message` and `unknown_type`
-    /// are both fatal per the protocol.
+    /// where recovered. Only `malformed_message` closes the connection; an
+    /// `unknown_type` is answered but otherwise ignored, for forward
+    /// compatibility.
     fn reply_decode_error(&mut self, err: DecodeError) -> Result<(), MbtError> {
         log::warn!("{}", err.message);
+        let fatal = err.code == ErrorCode::MalformedMessage;
         self.send(ToolMessage::Error(ErrorMessage {
             in_reply_to: err.in_reply_to,
             code: err.code,
             message: err.message,
         }))?;
-        self.begin_close(None)
+        if fatal {
+            self.begin_close(None)?;
+        }
+        Ok(())
     }
 
     /// Sends `error` for `err`, then closes the connection iff
